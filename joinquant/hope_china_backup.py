@@ -18,11 +18,11 @@ def initialize(context):
     
     # 定义符合条件的行业
     g.qualified_industry_list = [
-        'A02','A03','A04','B09','C13','C14','C18','C21','C22',
-        'C23','C24','C26','C27','C29','C34','C36','C38','C39',
-        'C40','C41','C42','D45','D46','E48','E50','F52','G54',
-        'I64','I65','J66','J68','J69','K70','L71','L72','M73',
-        'M74','N77','N78','Q83','R85','R86','R87'
+        # 'A02','A03','A04','B09','C13','C14','C18','C21','C22',
+        # 'C23','C24','C26','C27','C29','C34','C36','C38','C39',
+        # 'C40','C41','C42','D45','D46','E48','E50','F52','G54',
+        # 'I64','I65','J66','J68','J69','K70','L71','L72','M73',
+        # 'M74','N77','N78','Q83','R85','R86','R87'
         ]
     #考虑的年报周期
     g.consider_year_span = 5;
@@ -44,17 +44,18 @@ def initialize(context):
     
     #测试使用
     f = 12  # 调仓频率
-    g.Transfer_date = range(1,13,12/f)
+    # g.Transfer_date = range(1,13,12/f)
 
     ## 手动设定调仓月份（如需使用手动，注销上段）
     # 年报一般在3.30号之前发布， 半年调仓一次
-    # g.Transfer_date = (4,11)
+    g.Transfer_date = (4,11)
     
     run_daily(dapan_stoploss) #根据大盘止损，如不想加入大盘止损，注释此句即可
     ## 按月调用程序, 1~3经常会有假期，考虑10日做交易
     run_monthly(Transfer,10)
     
-    g.context = context
+    #准备行业列表
+    prepare_qualified_industry_list()
     
 
 def before_trading_start(context):
@@ -69,19 +70,14 @@ def after_trading_end(context):
 def handle_data(context, data):
     if(g.debug):
         print "handle_data"
-    Transfer(context)
+    # Transfer(context)
     # g.qualified_industry_list = ['C26']
 
 
 # 每个单位时间(如果按天回测,则每天调用一次,如果按分钟,则每分钟调用一次)调用一次
 def Transfer(context):
-    g.context = context
     months = context.current_dt.month
     if months in g.Transfer_date:
-        #准备行业列表
-        # g.qualified_industry_list = []
-        prepare_qualified_industry_list()
-    
         ## 分配资金
         if len(context.portfolio.positions) < g.max_stock_num :
             Num = g.max_stock_num  - len(context.portfolio.positions)
@@ -114,10 +110,10 @@ def Check_Stocks(context):
             print_list(current_industry_stocks)
             select_stocks.extend(current_industry_stocks)
     
-    end_year = context.current_dt.year
+    end_year = date.today().year
     current_year = end_year - 1        
     stock_number = g.max_stock_num
-    select_stocks = get_high_operation_profit_to_total_revenue_stocks(select_stocks, stock_number, current_year)
+    select_stocks = get_low_pe_ratio_stocks(select_stocks, stock_number, current_year)
     return select_stocks
     
 def get_stocks_in_industry(industry_code):
@@ -133,8 +129,8 @@ def get_stocks_in_industry(industry_code):
     
     #股票历史数据的筛选
     #5年内主营业无亏损，主营业利润大于0
-    end_year = g.context.current_dt.year
-    start_year = end_year - consider_year_span
+    end_year = date.today().year
+    start_year = date.today().year - consider_year_span
     
     for i in range(start_year, end_year):
         if g.debug:
@@ -156,9 +152,8 @@ def get_stocks_in_industry(industry_code):
     
     # 8年总利润之和，大于市值的一半（相当于长期pe参考）,net_profit
     # current_industry_stocks = ['000592.XSHE','000663.XSHE'] #测试
-    end_year = g.context.current_dt.year
-    start_year = end_year - g.consider_year_span_pe
-    
+    start_year = date.today().year - g.consider_year_span_pe
+    end_year = date.today().year
     current_market_cap_pe_compare_radio = g.current_market_cap_pe_compare_radio
     
     current_stocks = []
@@ -208,22 +203,6 @@ def get_stocks_in_industry(industry_code):
     current_industry_stocks = get_low_pe_ratio_stocks(current_industry_stocks,stock_number,current_year)
     return current_industry_stocks
 
-def get_high_operation_profit_to_total_revenue_stocks(stock_codes, stock_number, year):
-    if len(stock_codes) == 0 :
-        return []
-        
-    stock_query = query(
-            indicator.code
-        ).filter(
-            indicator.code.in_(stock_codes)
-        ).order_by(
-            indicator.operation_profit_to_total_revenue.desc()
-        ).limit(
-            stock_number
-        )
-    year_fundamental = get_year_fundamentals(stock_query, year)
-    return year_fundamental.index
-    
 def get_low_pe_ratio_stocks(stock_codes, stock_number, year):
     if len(stock_codes) == 0 :
         return []
@@ -312,8 +291,8 @@ def get_increase_each_year_industry(current_industry_code):
             income.code.in_(g.current_industry_stocks)
             )
             
-    end_year = g.context.current_dt.year
-    start_year = end_year - consider_year_span
+    end_year = date.today().year
+    start_year = date.today().year - consider_year_span
     
     #exclude end_year, because end_year financial data is not ready. 
     year_fundamentals = [get_year_fundamentals(industry_query, i) for i in range(start_year, end_year)]
