@@ -1,9 +1,12 @@
 import pandas as pd
 from pandas import Series,DataFrame
-from datetime import date
+from datetime import date, timedelta
 
 def initialize(context):
     #全局参数
+
+    g.USE_STOCK_QUOTA = True  # 是否调整仓位
+
     # 定义行业指数list
     # http://www.cnindex.com.cn/syl.html
     g.index_list = ['A01','A02','A03','A04','A05','B06',\
@@ -30,6 +33,8 @@ def initialize(context):
     g.consider_year_span_pe = 8;
     #长期pe和市值的比率
     g.current_market_cap_pe_compare_radio = 0.5
+    # 股票高估阈值
+    g.PEXPB_THR = 22.5
     
     #当前行业
     g.current_industry_code = ''
@@ -41,6 +46,7 @@ def initialize(context):
     
     #设置环境
     set_commission(PerTrade(buy_cost=0.0003, sell_cost=0.0013, min_cost=5))
+    #set_option("use_real_price", True)  # 用历史真实价格进行回测，疑问：context.portfolio里的股票数量会否自动拆分。
     
     #测试使用
     # f = 12  # 调仓频率
@@ -49,29 +55,77 @@ def initialize(context):
     ## 手动设定调仓月份（如需使用手动，注销上段）
     # 年报一般在3.30号之前发布， 半年调仓一次
     g.Transfer_date = (4,11)
-    
-    run_daily(dapan_stoploss) #根据大盘止损，如不想加入大盘止损，注释此句即可
+   
+    if g.USE_STOCK_QUOTA:
+        run_daily(dapan_stoploss, time='before_open') #'before_open'是确保在其他交易操作之前判断，若清盘止损就不作其他操作了
+        run_daily(clear_stock_quota, time='open')  # 市价单只能在开市后下单
+    else:
+        run_daily(dapan_stoploss) #根据大盘止损,如不想加入大盘止损，注释此句即可
+
     ## 按月调用程序, 1~3经常会有假期，考虑10日做交易
     run_monthly(Transfer,10)
     
+    # 按周调用，每第一个交易日开盘前评估股票价格
+    if g.USE_STOCK_QUOTA:
+        run_weekly(weekly_adjust, weekday=1, time='open')
+
     #准备行业列表
     prepare_qualified_industry_list()
-    
 
-def before_trading_start(context):
+    # 持仓股票字典{stockCode: stockQuota}
+    g.stockQuotaDict = {}
+    
+def before_trading_start(context):   # 需确保与run_daily(dapan_stoploss, time='before_open')不冲突，结果与执行顺序无关
+    if g.USE_STOCK_QUOTA:
+        for stock in g.stockQuotaDict:
+            stockQuota = g.stockQuotaDict.get(stock)
+            if stockQuota.clearance:
+                if stockQuota.percent == 0:
+                    del g.stockQuotaDict[stock]
+                #else:
+                #    stockQuota.adjust(context)
     if(g.debug):
         print "before_trading_start"
     
 def after_trading_end(context):
+    if g.USE_STOCK_QUOTA:
+        update_quota_after_trading(context)
     if(g.debug):
-        print "end_trading_start"
+        print "after_trading_end"
+    pass
+
+
+    
+def update_quota_after_trading(context):
+    '''
+    每个交易日更新各个有交易的股票的市值和剩余现金额度
+    '''
+    orderDict = get_orders()
+    for orderID in orderDict:
+        order = orderDict.get(orderID)
+        if order.filled > 0: # 有成交
+            stockQuota = g.stockQuotaDict.get(order.security)
+            stockQuota.update_value_after_trading(context, order)
+            #stockQuota.amount = context.portfolio.positions.get(order.security).total_amount  # 更新持仓数
+            #if order.is_buy:    # 更新剩余现金
+            #    stockQuota.cash = stockQuota.cash - order.cash
+            #else: # sell
+            #    stockQuota.cash = stockQuota.cash + order.cash
+    pass
 
 # 每个单位时间(如果按天回测,则每天调用一次,如果按分钟,则每分钟调用一次)调用一次
-def handle_data(context, data):
-    if(g.debug):
-        print "handle_data"
+#def handle_data(context, data):
+    #if(g.debug):
+    #    print "handle_data"
     # Transfer(context)
     # g.qualified_industry_list = ['C26']
+
+# 类似网格交易，根据股票pb*pe值控制股票的仓位(run weekly)
+def weekly_adjust(context):
+    for stock in g.stockQuotaDict:
+        stockQuota = g.stockQuotaDict.get(stock)
+        stockQuota.adjust(context) # 调整仓位
+    pass
 
 
 # 每个单位时间(如果按天回测,则每天调用一次,如果按分钟,则每分钟调用一次)调用一次
@@ -87,14 +141,19 @@ def Transfer(context):
         
         ## 获得Buylist
         Buylist = Check_Stocks(context)
-        # Buylist = ['000422.XSHE','600309.XSHG','000338.XSHE']
+        #Buylist = ['000422.XSHE','600309.XSHG','000338.XSHE',,'600000.XSHG','000001.XSHE']
         log.info(len(Buylist))
         # log.info(Buylist)
         if len(Buylist) > 0:
             for stock in Buylist:
-                if stock not in context.portfolio.positions.keys():
-                    order_value(stock,Cash)
-                    log.info("Buying %s" % (stock))
+                if g.USE_STOCK_QUOTA:
+                    if (stock not in g.stockQuotaDict) and (len(g.stockQuotaDict)<g.max_stock_num):
+                        g.stockQuotaDict[stock] = StockQuota(context, stock, Cash)
+                        log.info("Adding %s" % (stock))
+                else:
+                    if stock not in context.portfolio.positions:
+                        order_value(stock,Cash)
+                        log.info("Buying %s" % (stock))
     else:
         pass
 
@@ -126,38 +185,12 @@ def get_stocks_in_industry(industry_code):
     #设置当前需要操作的股票
     set_universe(current_industry_stocks)
     
-
-    #一次性装载所有行业数据，判断
-    year_span = max(consider_year_span, consider_year_span_pe)
     
-    end_year = date.today().year
-    start_year = date.today().year - year_span
-
-    industry_query = query(
-            income
-            ).filter(
-                income.code.in_(current_industry_stocks),
-                #主营业利润大于0
-                income.operating_profit > 0
-                )
-    year_fundamentals = [get_year_fundamentals(industry_query, i) for i in range(start_year, end_year)]
-
-    industry_stocks_fundamentals = pd.concat(year_fundamentals)
-
     #股票历史数据的筛选
     #5年内主营业无亏损，主营业利润大于0
-    for i in range(start_year, consider_year_span)
-        query_str = 'income.code in_(current_industry_stocks) & income.operating_profit > 0 & stat_year = %s' % i
-        filter_year_fundamentals = industry_stocks_fundamentals.query(query_str)
-        current_industry_stocks = filter_year_fundamentals.index
-    #过滤，过滤出consider_year_span 年的数据
+    end_year = date.today().year
+    start_year = date.today().year - consider_year_span
     
-    #group by code, year, 保证数量大于5，如果遇到上市年份不够的股票会错过
-
-    #按股票，累加利润
-    #获取市值比较
-    
-    #从开始年到结束年，逐年筛选保证
     for i in range(start_year, end_year):
         if g.debug:
             print str(i)+" year processing"
@@ -304,7 +337,11 @@ def prepare_qualified_industry_list():
 def get_increase_each_year_industry(current_industry_code):
     consider_year_span = g.consider_year_span
     g.current_industry_code = current_industry_code
-    g.current_industry_stocks = get_industry_stocks(g.current_industry_code)
+    try:
+        g.current_industry_stocks = get_industry_stocks(g.current_industry_code)
+    except:
+        log.warn('Fail getting industry stocks. Probably there is no stock in industry(code: %s) at the time the test begins with.' % (current_industry_code))
+        return 
     #设置当前需要操作的股票
     set_universe(g.current_industry_stocks)
 
@@ -351,7 +388,6 @@ def get_year_fundamentals(query_object, stat_year):
     quarter_fundamentals = [get_fundamentals(query_object, statDate=str(stat_year)+'q'+str(i)) for i in range(1,5)]
     concat_quarter_fundamentals = pd.concat(quarter_fundamentals)
     result = concat_quarter_fundamentals.groupby('code').sum()
-    result['stat_year'] = pd.Series(stat_year , index=result.index) 
     return result
      
 #交易  
@@ -361,9 +397,15 @@ def dapan_stoploss(context):
     #kernel=2, n=20, zs=0.2
     stoploss = dp_stoploss(kernel=2, n=20, zs=0.2)
     if stoploss:
-        if len(context.portfolio.positions)>0:
+        log.info('大盘危急，清盘！')
+        if g.USE_STOCK_QUOTA:
+            for stock in g.stockQuotaDict:
+                stockQuota = g.stockQuotaDict.get(stock)
+                stockQuota.clear(context)
+        elif len(context.portfolio.positions)>0:
             for stock in list(context.portfolio.positions.keys()):
                 order_target(stock, 0)
+
         # return
 
 def dp_stoploss(kernel=2, n=10, zs=0.03):
@@ -390,6 +432,13 @@ def dp_stoploss(kernel=2, n=10, zs=0.03):
             return True
         else:
             return False
+
+def clear_stock_quota(context):
+    for stock in g.stockQuotaDict:
+        stockQuota = g.stockQuotaDict.get(stock)
+        if stockQuota.clearance:
+            stockQuota.adjust(context)
+    pass
             
 #工具类
 def print_list(my_list):
@@ -398,5 +447,137 @@ def print_list(my_list):
         
 def describe(pd_struct):
     print pd_struct.describe()
-    print pd_struct
+    print pd_structi
+
+
+def get_last_day_pexpb(context, stock_code):
+    q = query(
+        valuation.pb_ratio, valuation.pe_ratio
+        ).filter(
+            valuation.code == stock_code
+        )
+    df = get_fundamentals(q, context.current_dt.date())  # 得到current_dt前一交易日的数据
+    pb = df.iloc[0]['pb_ratio']
+    pe = df.iloc[0]['pe_ratio']
+    return pb*pe
+
+def get_last_day_price(context, stockCode):
+    '''
+    获得前一个交易日的股票收市价
+    '''
+    startDate = context.current_dt - timedelta(30) # 获得30日前到当日的历史价格（休市怎么也不会超过1个月吧）
+    endDate   = context.current_dt
+    df = get_price(stockCode, start_date=startDate, end_date=endDate, frequency = "1d", fields=['close'], fq = 'pre') # !使用了前复权价格  
+    return df.iloc[-2]['close']   #[-1]是当日的价格，[-2] 是前一交易日的价格
+
+def get_today_price(context, stockCode):
+    '''
+    获得当天收市价
+    '''
+    df = get_price(stockCode, start_date=context.current_dt, end_date=context.current_dt, frequency = "1d", fields=['close'], fq = 'pre') # !使用了前复权价格  
+    return df.iloc[0]['close']   #[-1]是当日的价格，[-2] 是前一交易日的价格
+
+
+
+class StockQuota:
+    def __init__(self, context, stockCode, value, amountOwned=0): # 请在建仓时初始化
+        '''
+        初始化目标股票的初始仓位和现金。
+        value: 指定给该股票的配额
+        amountOwned：已经拥有该股票的数量，默认为0
+        '''
+        self.adjust_method = self._adjust_method_1 # 指定调仓方法
+        self.stockCode  = stockCode
+        self.value      = value         # 可用于操作此股票的原始市值（股票 + 现金）
+        self.amount     = amountOwned   # 拥有此股票的数量
+        self.clearance  = False         # 是否要清仓此股票，清仓后从stockQuotaDict中删除，释放配额
+
+        price = get_last_day_price(context, stockCode)
+        self.cash       = self.value - self.amount * price  # 现金
+        self.percent    = self.amount * price / self.value  # 仓位
+        self.percentExpected = self.percent
+
     
+    def update_value_before_trading(self, context):
+        '''
+         重新计算股票市值（配额）---- 交易前
+        '''
+        position = context.portfolio.positions.get(self.stockCode)
+        if position:
+            self.amount = position.total_amount    # 若用真实历史股价回测时更新股数（应付可能的送股？回测环境是否自动拆分？）
+        else:
+            self.amount = 0
+
+        #price = context.portfolio.positions.get(self.stockCode).price  # 与上一种方法应该有相同的结果
+        price = get_last_day_price(context, self.stockCode)  # 交易前只能获得前一交易日收盘价
+        self.value  = self.cash + self.amount * price
+        pass
+
+    def adjust(self, context):
+        self.update_value_before_trading(context) # 重新计算市值
+        if self.clearance:
+            percent = 0.0
+        else:
+            percent = self.adjust_method(context)  # 决定某只股票仓位百分比
+        if percent != self.percent:
+            stockValueNew = self.value * percent
+            order_target_value(self.stockCode, stockValueNew)
+            self.percentExpected = percent
+            # 检查成交后更新更新self.percent
+            # update self.amount & self.cash  ---> after_trading_end()
+
+        pass
+    
+    def update_value_after_trading(self, context, order):
+        '''
+        重新计算股票市值（配额）---- 交易后
+        context:
+        order: 交易单信息 Order对象
+        '''
+        position = context.portfolio.positions.get(self.stockCode)
+        if position:
+            self.amount = position.total_amount            
+        else:
+            self.amount = 0
+        
+        if order.is_buy:    # 更新剩余现金
+            self.cash = self.cash - order.cash
+        else: # sell
+            self.cash = self.cash + order.cash
+        
+        price = get_today_price(context, self.stockCode)
+        self.value  = self.cash + self.amount * price
+
+        if order.status == OrderStatus.held:
+            log.info("Adjusting %s SUCCEEDED (%d%% -> %d%%)." % (self.stockCode, self.percent*100, self.percentExpected*100))
+            self.percent = self.percentExpected  # 调仓完成，不会触发交易
+        else:
+            self.percent = self.amount * price / self.value  # 调仓未完成，可能触发交易 -> 满足adjust()调仓条件
+
+
+    def _adjust_method_1(self, context):
+        '''
+        pe*pb每超过阈值10%，减仓10%
+        '''
+        THR = g.PEXPB_THR
+        pexpb = get_last_day_pexpb(context, self.stockCode)
+        delta = float(pexpb - THR) / float(THR)
+        if delta < 0:
+            percent = 1.0
+        elif delta > 1:
+            percent = 0.0
+        else:
+            percent = 1.0 - int(delta*10)/10.0
+        return percent
+       #pass
+
+    def clear(self, context):
+        '''
+        此函数可在before_open时执行，
+        '''
+        self.clearance = True
+        #self.adjust(context)  #adjust需要在open后执行,由clear_stock_quota()触发
+        pass
+        
+# end of class StockQuota        
+
