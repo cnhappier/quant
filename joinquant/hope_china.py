@@ -57,7 +57,7 @@ def initialize(context):
     g.Transfer_date = (4,11)
    
     if g.USE_STOCK_QUOTA:
-        run_daily(dapan_stoploss, time='before_open') #'before_open'是确保在其他交易操作之前判断，若清盘止损就不作其他操作了
+        #run_daily(dapan_stoploss, time='before_open') #'before_open'是确保在其他交易操作之前判断，若清盘止损就不作其他操作了
         run_daily(clear_stock_quota, time='open')  # 市价单只能在开市后下单
     else:
         run_daily(dapan_stoploss) #根据大盘止损,如不想加入大盘止损，注释此句即可
@@ -69,15 +69,16 @@ def initialize(context):
     if g.USE_STOCK_QUOTA:
         run_weekly(weekly_adjust, weekday=1, time='open')
 
-    #准备行业列表
-    prepare_qualified_industry_list()
+    #准备行业列表 --> 放到每次Check_Stock前进行
+    # prepare_qualified_industry_list()
 
     # 持仓股票字典{stockCode: stockQuota}
     g.stockQuotaDict = {}
     
 def before_trading_start(context):   # 需确保与run_daily(dapan_stoploss, time='before_open')不冲突，结果与执行顺序无关
     if g.USE_STOCK_QUOTA:
-        for stock in g.stockQuotaDict:
+        keys = list(g.stockQuotaDict.keys())
+        for stock in keys:
             stockQuota = g.stockQuotaDict.get(stock)
             if stockQuota.clearance:
                 if stockQuota.percent == 0:
@@ -158,6 +159,8 @@ def Transfer(context):
         pass
 
 def Check_Stocks(context):
+    prepare_qualified_industry_list()
+
     select_stocks = []
     
     qualified_industry_list = g.qualified_industry_list
@@ -317,6 +320,10 @@ def get_market_cap(stock_code):
 # 输出符合条件的行业列表 
 def prepare_qualified_industry_list():
     index_list = g.index_list
+
+    # reset qualified_industry_list
+    g.qualified_industry_list = []
+
     qualified_industry_list = g.qualified_industry_list
     
     if len(qualified_industry_list) != 0:
@@ -449,7 +456,7 @@ def describe(pd_struct):
     print pd_struct.describe()
     print pd_structi
 
-
+#正数表示pe * pb, 负数表示亏损或者不合理的值
 def get_last_day_pexpb(context, stock_code):
     q = query(
         valuation.pb_ratio, valuation.pe_ratio
@@ -457,6 +464,10 @@ def get_last_day_pexpb(context, stock_code):
             valuation.code == stock_code
         )
     df = get_fundamentals(q, context.current_dt.date())  # 得到current_dt前一交易日的数据
+
+    if df.empty:
+        return -1
+
     pb = df.iloc[0]['pb_ratio']
     pe = df.iloc[0]['pe_ratio']
     return pb*pe
@@ -561,6 +572,10 @@ class StockQuota:
         '''
         THR = g.PEXPB_THR
         pexpb = get_last_day_pexpb(context, self.stockCode)
+        #亏损或者其他原因，如退市，先卖出
+        if pexpb <= 0:
+            return 0.0
+
         delta = float(pexpb - THR) / float(THR)
         if delta < 0:
             percent = 1.0
@@ -580,4 +595,5 @@ class StockQuota:
         pass
         
 # end of class StockQuota        
+
 
