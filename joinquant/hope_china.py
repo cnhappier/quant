@@ -7,7 +7,7 @@ def initialize(context):
     set_option('use_real_price', True)
     #全局参数
 
-    g.USE_STOCK_QUOTA = True  # 是否调整仓位 True
+    g.USE_STOCK_QUOTA = False  # 是否调整仓位 True
 
     # 定义行业指数list
     # http://www.cnindex.com.cn/syl.html
@@ -190,54 +190,12 @@ def get_stocks_in_industry(industry_code):
     #设置当前需要操作的股票
     set_universe(current_industry_stocks)
     
-    
-    #股票历史数据的筛选
-    #5年内主营业无亏损，主营业利润大于0
-    end_year = date.today().year
-    start_year = date.today().year - consider_year_span
-    
-    for i in range(start_year, end_year):
-        if g.debug:
-            print str(i)+" year processing"
-        industry_query = query(
-            income
-            ).filter(
-                income.code.in_(current_industry_stocks),
-                #主营业利润大于0
-                income.operating_profit > 0
-                )
-        year_fundamental = get_year_fundamentals(industry_query, i)
-        current_industry_stocks = year_fundamental.index
-        
-    
-    if g.debug:
-        print "5年内主营业无亏损，主营业利润大于0:"
-        print_list(current_industry_stocks)
-    
-    # 8年总利润之和，大于市值的一半（相当于长期pe参考）,net_profit
-    # current_industry_stocks = ['000592.XSHE','000663.XSHE'] #测试
-    start_year = date.today().year - g.consider_year_span_pe
-    end_year = date.today().year
-    current_market_cap_pe_compare_radio = g.current_market_cap_pe_compare_radio
-    
-    current_stocks = []
-    for stock_code in current_industry_stocks:
-        current_market_cap = get_market_cap(stock_code)
-        if g.debug:
-            print "current_market_cap:" + str(current_market_cap)
-        
-        total_net_profit = get_year_sum(stock_code, 'net_profit', start_year, end_year)
-        if g.debug:
-            print "total_net_profit:" + str(total_net_profit)
-
-        if total_net_profit > (current_market_cap * current_market_cap_pe_compare_radio) :
-            current_stocks.append(stock_code)
-    
-    current_industry_stocks = current_stocks
-
     #当前情况筛选
+    #获取当年的情况，筛选出符合当年行业的股票。
     #行业，净利润率的平均值，取得当年行业的平均值
     #营业收入的前30%，数值情况，取得当年营业收入30%
+    #11s
+    end_year = date.today().year
     current_year = end_year - 1
     
     industry_stocks = get_industry_stocks(g.current_industry_code)
@@ -255,12 +213,49 @@ def get_stocks_in_industry(industry_code):
     year_fundamental = year_fundamental[year_fundamental.net_profit_to_total_revenue > year_fundamental.net_profit_to_total_revenue.quantile(0.5)]
     year_fundamental = year_fundamental[year_fundamental.total_operating_revenue > year_fundamental.total_operating_revenue.quantile(0.3)]
     industry_stocks = year_fundamental.index
+
+    current_industry_stocks = industry_stocks
+
+    #TODO
+    #股票历史数据的筛选，根据这个列表筛选
+    #查询8年的数据，筛选条件是主营业务利润大于0
+    #拼凑8年的数据，然后看最近连续5年的利润大于0的情况，选出对应的代码，过滤一次目前8年的数据
+    #以上得到5年没有亏损的股票的，8年的所有年报表数据
     
-    current_industry_stocks = list(set(current_industry_stocks).intersection(set(industry_stocks)))
-    if len(current_industry_stocks) != 0 :
-        print 'qualified history fitler for industry:'+str(industry_code)
-            
+    #25s
+    #股票历史数据的筛选
+    #5年内主营业无亏损，主营业利润大于0    
+    start_year = date.today().year - consider_year_span
+    for i in range(start_year, end_year):
+        if g.debug:
+            print str(i)+" year processing"
+        industry_query = query(
+            income
+            ).filter(
+                income.code.in_(current_industry_stocks),
+                #主营业利润大于0
+                income.operating_profit > 0
+                )
+        year_fundamental = get_year_fundamentals(industry_query, i)
+        current_industry_stocks = year_fundamental.index
+
+    # 8年总利润之和，大于市值的一半（相当于长期pe参考）,net_profit
+    current_market_cap_pe_compare_radio = g.current_market_cap_pe_compare_radio
+    current_stocks = []
+    for stock_code in current_industry_stocks:
+        current_market_cap = get_market_cap(stock_code)
+        if g.debug:
+            print "current_market_cap:" + str(current_market_cap)
+        
+        total_net_profit = get_year_sum(stock_code, 'net_profit', start_year, end_year)
+        if g.debug:
+            print "total_net_profit:" + str(total_net_profit)
+
+        if total_net_profit > (current_market_cap * current_market_cap_pe_compare_radio) :
+            current_stocks.append(stock_code)
     
+    current_industry_stocks = current_stocks
+
     #选取前3
     #按pe估值排序(不使用pb，主要考虑成长性)
     stock_number = 3
@@ -319,7 +314,7 @@ def get_market_cap(stock_code):
         current_value = df['market_cap'][0] * market_cap_unit
     return current_value
         
-# 输出符合条件的行业列表 
+# 输出符合条件的行业列表 , 68s
 def prepare_qualified_industry_list():
     index_list = g.index_list
 
@@ -489,7 +484,6 @@ def get_today_price(context, stockCode):
     '''
     df = get_price(stockCode, start_date=context.current_dt, end_date=context.current_dt, frequency = "1d", fields=['close'], fq = 'pre') # !使用了前复权价格  
     return df.iloc[0]['close']   #[-1]是当日的价格，[-2] 是前一交易日的价格
-
 
 
 class StockQuota:
