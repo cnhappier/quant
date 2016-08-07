@@ -3,9 +3,11 @@ from pandas import Series,DataFrame
 from datetime import date, timedelta
 
 def initialize(context):
+    #开启真实价格回测功能
+    set_option('use_real_price', True)
     #全局参数
 
-    g.USE_STOCK_QUOTA = True  # 是否调整仓位
+    g.USE_STOCK_QUOTA = True  # 是否调整仓位 True
 
     # 定义行业指数list
     # http://www.cnindex.com.cn/syl.html
@@ -568,7 +570,8 @@ class StockQuota:
 
     def _adjust_method_1(self, context):
         '''
-        pe*pb每超过阈值10%，减仓10%
+        # pe*pb每超过阈值10%，减仓10%
+        修改成shangzhang的时候减仓10%
         '''
         THR = g.PEXPB_THR
         pexpb = get_last_day_pexpb(context, self.stockCode)
