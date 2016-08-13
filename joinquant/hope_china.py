@@ -7,7 +7,8 @@ def initialize(context):
     set_option('use_real_price', True)
     #全局参数
 
-    g.USE_STOCK_QUOTA = False  # 是否调整仓位 True
+    g.DAILY_TEST = False #每天检查是否有股票买入
+    g.USE_STOCK_QUOTA = True  # 是否调整仓位 True
 
     # 定义行业指数list
     # http://www.cnindex.com.cn/syl.html
@@ -30,13 +31,13 @@ def initialize(context):
         # 'M74','N77','N78','Q83','R85','R86','R87'
         ]
     #考虑的年报周期
-    g.consider_year_span = 5;
+    g.consider_year_span = 5
     #长期pe考虑的年份周期
-    g.consider_year_span_pe = 8;
+    g.consider_year_span_pe = 8
     #长期pe和市值的比率
     g.current_market_cap_pe_compare_radio = 0.5
     # 股票高估阈值
-    g.PEXPB_THR = 22.5
+    g.PEXPB_THR = 22.5 * 2
     
     #当前行业
     g.current_industry_code = ''
@@ -45,18 +46,20 @@ def initialize(context):
     g.debug = False
     g.max_stock_num = 10
     g.max_percent_per_stock = 100 / g.max_stock_num
+    g.context = context
     
     #设置环境
     set_commission(PerTrade(buy_cost=0.0003, sell_cost=0.0013, min_cost=5))
     #set_option("use_real_price", True)  # 用历史真实价格进行回测，疑问：context.portfolio里的股票数量会否自动拆分。
     
-    #测试使用
-    # f = 12  # 调仓频率
-    # g.Transfer_date = range(1,13,12/f)
-
-    ## 手动设定调仓月份（如需使用手动，注销上段）
-    # 年报一般在3.30号之前发布， 半年调仓一次
-    g.Transfer_date = (4,11)
+    if g.DAILY_TEST :
+        #测试使用
+        f = 12  # 调仓频率
+        g.Transfer_date = range(1,13,12/f)
+    else :
+        ## 手动设定调仓月份（如需使用手动，注销上段）
+        # 年报一般在3.30号之前发布， 半年调仓一次
+        g.Transfer_date = (5,10)
    
     if g.USE_STOCK_QUOTA:
         #run_daily(dapan_stoploss, time='before_open') #'before_open'是确保在其他交易操作之前判断，若清盘止损就不作其他操作了
@@ -65,6 +68,7 @@ def initialize(context):
         run_daily(dapan_stoploss) #根据大盘止损,如不想加入大盘止损，注释此句即可
 
     ## 按月调用程序, 1~3经常会有假期，考虑10日做交易
+    #五一、十一都是长假，因此订10号
     run_monthly(Transfer,10)
     
     # 按周调用，每第一个交易日开盘前评估股票价格
@@ -133,6 +137,7 @@ def weekly_adjust(context):
 
 # 每个单位时间(如果按天回测,则每天调用一次,如果按分钟,则每分钟调用一次)调用一次
 def Transfer(context):
+    g.context = context
     months = context.current_dt.month
     if months in g.Transfer_date:
         ## 分配资金
@@ -174,8 +179,8 @@ def Check_Stocks(context):
             print_list(current_industry_stocks)
             select_stocks.extend(current_industry_stocks)
     
-    end_year = date.today().year
-    current_year = end_year - 1        
+    end_year = context.current_dt.year
+    current_year = end_year - 1
     stock_number = g.max_stock_num
     select_stocks = get_low_pe_ratio_stocks(select_stocks, stock_number, current_year)
     return select_stocks
@@ -195,7 +200,7 @@ def get_stocks_in_industry(industry_code):
     #行业，净利润率的平均值，取得当年行业的平均值
     #营业收入的前30%，数值情况，取得当年营业收入30%
     #11s
-    end_year = date.today().year
+    end_year = g.context.current_dt.year
     current_year = end_year - 1
     
     industry_stocks = get_industry_stocks(g.current_industry_code)
@@ -225,7 +230,7 @@ def get_stocks_in_industry(industry_code):
     #25s
     #股票历史数据的筛选
     #5年内主营业无亏损，主营业利润大于0    
-    start_year = date.today().year - consider_year_span
+    start_year = end_year - consider_year_span
     for i in range(start_year, end_year):
         if g.debug:
             print str(i)+" year processing"
@@ -272,7 +277,9 @@ def get_low_pe_ratio_stocks(stock_codes, stock_number, year):
             valuation.code.in_(stock_codes)
         ).order_by(
             #按市盈率排序，市盈率小便宜
-            valuation.pe_ratio
+            #valuation.pe_ratio
+            #pe * pb最小
+            valuation.pb_ratio * valuation.pe_ratio
         ).limit(
             stock_number
         )
@@ -307,7 +314,7 @@ def get_market_cap(stock_code):
             ).filter(
                 valuation.code == stock_code
             )
-    df = get_fundamentals(q)
+    df = get_fundamentals(q, g.context.current_dt.date())
     current_value = 0
     # 总市值，总市值(亿元)
     if len(df['market_cap']) > 0:
@@ -591,6 +598,4 @@ class StockQuota:
         #self.adjust(context)  #adjust需要在open后执行,由clear_stock_quota()触发
         pass
         
-# end of class StockQuota        
-
-
+# end of class StockQuota 
