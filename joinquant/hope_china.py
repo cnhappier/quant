@@ -124,11 +124,10 @@ def update_quota_after_trading(context):
     pass
 
 # 每个单位时间(如果按天回测,则每天调用一次,如果按分钟,则每分钟调用一次)调用一次
-#def handle_data(context, data):
-    #if(g.debug):
-    #    print "handle_data"
-    # Transfer(context)
-    # g.qualified_industry_list = ['C26']
+def handle_data(context, data):
+    if g.DAILY_TEST:
+        Transfer(context)
+        print "Transfer"
 
 # 类似网格交易，根据股票pb*pe值控制股票的仓位(run weekly)
 def weekly_adjust(context):
