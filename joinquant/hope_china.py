@@ -94,8 +94,8 @@ def before_trading_start(context):   # 需确保与run_daily(dapan_stoploss, tim
                     del g.stockQuotaDict[stock]
                 #else:
                 #    stockQuota.adjust(context)
-    if(g.debug):
-        print "before_trading_start"
+    if g.DAILY_TEST:
+        Transfer(context)
     
 def after_trading_end(context):
     if g.USE_STOCK_QUOTA:
@@ -124,10 +124,8 @@ def update_quota_after_trading(context):
     pass
 
 # 每个单位时间(如果按天回测,则每天调用一次,如果按分钟,则每分钟调用一次)调用一次
-def handle_data(context, data):
-    if g.DAILY_TEST:
-        Transfer(context)
-        print "Transfer"
+# def handle_data(context, data):
+#         print "handle_data"
 
 # 类似网格交易，根据股票pb*pe值控制股票的仓位(run weekly)
 def weekly_adjust(context):
@@ -253,7 +251,8 @@ def get_stocks_in_industry(industry_code):
     #获得8年的数据
     stock_data_frame = get_data_frame(current_industry_stocks, start_year, end_year)
     
-    print "industry_code:" + str(industry_code) + "before long term pe: stock num :" + str(len(current_industry_stocks))
+    if g.debug:
+        print "industry_code: " + str(industry_code) + " .before long term pe: stock num:" + str(len(current_industry_stocks))
         
     current_stocks = []
     for stock_code in current_industry_stocks:
@@ -269,8 +268,8 @@ def get_stocks_in_industry(industry_code):
             current_stocks.append(stock_code)
     
     current_industry_stocks = current_stocks
-
-    print "industry_code:" + str(industry_code) + "after long term pe: stock num :" + str(len(current_industry_stocks))
+    if g.debug:
+        print "industry_code:" + str(industry_code) + " .after long term pe: stock num:" + str(len(current_industry_stocks))
 
     #选取前3
     #按pe估值排序(不使用pb，主要考虑成长性)
