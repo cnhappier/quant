@@ -9,6 +9,7 @@ def initialize(context):
 
     g.DAILY_TEST = False #每天检查是否有股票买入
     g.USE_STOCK_QUOTA = True  # 是否调整仓位 True
+    g.PREPARE_INDUSTRY_IN_CHECK_STOCKS = True  # 是否重新选定行业
 
     # 定义行业指数list
     # http://www.cnindex.com.cn/syl.html
@@ -24,12 +25,17 @@ def initialize(context):
     
     # 定义符合条件的行业
     g.qualified_industry_list = [
-        # 'A02','A03','A04','B09','C13','C14','C18','C21','C22',
-        # 'C23','C24','C26','C27','C29','C34','C36','C38','C39',
-        # 'C40','C41','C42','D45','D46','E48','E50','F52','G54',
-        # 'I64','I65','J66','J68','J69','K70','L71','L72','M73',
-        # 'M74','N77','N78','Q83','R85','R86','R87'
         ]
+
+    if g.PREPARE_INDUSTRY_IN_CHECK_STOCKS == False:
+        g.qualified_industry_list = [
+        'A02','A03','A04','B09','C13','C14','C18','C21','C22',
+        'C23','C24','C26','C27','C29','C34','C36','C38','C39',
+        'C40','C41','C42','D45','D46','E48','E50','F52','G54',
+        'I64','I65','J66','J68','J69','K70','L71','L72','M73',
+        'M74','N77','N78','Q83','R85','R86','R87'        
+        ]
+
     #考虑的年报周期
     g.consider_year_span = 5
     #长期pe考虑的年份周期
@@ -74,9 +80,6 @@ def initialize(context):
     # 按周调用，每第一个交易日开盘前评估股票价格
     if g.USE_STOCK_QUOTA:
         run_weekly(weekly_adjust, weekday=1, time='open')
-
-    #准备行业列表 --> 放到每次Check_Stock前进行
-    # prepare_qualified_industry_list()
 
     # 持仓股票字典{stockCode: stockQuota}
     g.stockQuotaDict = {}
@@ -166,7 +169,8 @@ def Transfer(context):
         pass
 
 def Check_Stocks(context):
-    prepare_qualified_industry_list()
+    if g.PREPARE_INDUSTRY_IN_CHECK_STOCKS:
+        prepare_qualified_industry_list()
 
     select_stocks = []
     
@@ -246,13 +250,19 @@ def get_stocks_in_industry(industry_code):
 
     # 8年总利润之和，大于市值的一半（相当于长期pe参考）,net_profit
     current_market_cap_pe_compare_radio = g.current_market_cap_pe_compare_radio
+    
+    #获得8年的数据
+    stock_data_frame = get_data_frame(current_industry_stocks, start_year, end_year)
+    
+    print "industry_code:" + str(industry_code) + "before long term pe: stock num :" + str(len(current_industry_stocks))
+        
     current_stocks = []
     for stock_code in current_industry_stocks:
         current_market_cap = get_market_cap(stock_code)
         if g.debug:
             print "current_market_cap:" + str(current_market_cap)
         
-        total_net_profit = get_year_sum(stock_code, 'net_profit', start_year, end_year)
+        total_net_profit = get_year_sum_in_date_frame(stock_code, 'net_profit', start_year, end_year, stock_data_frame)
         if g.debug:
             print "total_net_profit:" + str(total_net_profit)
 
@@ -261,12 +271,35 @@ def get_stocks_in_industry(industry_code):
     
     current_industry_stocks = current_stocks
 
+    print "industry_code:" + str(industry_code) + "after long term pe: stock num :" + str(len(current_industry_stocks))
+
     #选取前3
     #按pe估值排序(不使用pb，主要考虑成长性)
     stock_number = 3
     current_industry_stocks = get_low_pe_ratio_stocks(current_industry_stocks,stock_number,current_year)
     return current_industry_stocks
 
+def get_data_frame(stock_code_list, start_year, end_year):
+    industry_query = query(
+        income
+        ).filter(
+            income.code.in_(stock_code_list)
+            )
+    year_fundamentals = [get_year_fundamentals(industry_query, i) for i in range(start_year, end_year)]
+    stock_pool_struct = pd.concat(year_fundamentals)
+    return stock_pool_struct
+
+def get_year_sum_in_date_frame(stock_code, field, start_year, end_year, stock_pool_struct):
+    query_str = 'code=="' + str(stock_code) + '"'
+    stock_pool_struct = stock_pool_struct.query(query_str)
+    stock_pool_struct = stock_pool_struct.sum()
+    
+    if g.debug:
+        print "stock_code:" + str(stock_code) + "get_year_sum year_fundamentals groupby output:"
+        describe(stock_pool_struct)
+    
+    return stock_pool_struct[field]
+    
 def get_low_pe_ratio_stocks(stock_codes, stock_number, year):
     if len(stock_codes) == 0 :
         return []
@@ -458,7 +491,7 @@ def print_list(my_list):
         
 def describe(pd_struct):
     print pd_struct.describe()
-    print pd_structi
+    print pd_struct
 
 #正数表示pe * pb, 负数表示亏损或者不合理的值
 def get_last_day_pexpb(context, stock_code):
